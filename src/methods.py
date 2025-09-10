@@ -7,7 +7,7 @@ from typing import Callable, List, Tuple, FrozenSet, Set, Dict
 from collections import deque
 
 # Internal imports
-from .molecule import find_mol_sym_atoms, submolecule, to_graph
+from molecule import find_mol_sym_atoms, submolecule, to_graph
 
 # Type aliases
 PredictorFn = Callable[[List[Mol] | Tuple[Mol]], List[float]]
@@ -69,7 +69,8 @@ class AtomsExplainer(object):
         graph = self._build_coalition_graph(mol)
 
         # Batched predictions for all submolecules in the coalition graph
-        coalitions, mols = zip((c, n["molecule"]) for c, n in graph.nodes.items())
+        gen = ((c, n["molecule"]) for c, n in graph.nodes.items())
+        coalitions, mols = zip(*gen)
         for i, p in enumerate(self.predictor(mols)):
             node = graph.nodes[coalitions[i]]
             node["prediction"] = p

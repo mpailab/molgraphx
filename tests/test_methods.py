@@ -1,9 +1,12 @@
 import pytest
 import networkx as nx
 from rdkit import Chem
+import os
+import sys
 
-from src.methods import AtomsExplainer
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+from methods import AtomsExplainer
 
 def test_explainer_small_molecule_short_circuit():
     # predictor returns a constant scalar

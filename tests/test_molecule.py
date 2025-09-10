@@ -1,7 +1,11 @@
 import pytest
 from rdkit import Chem
+import os
+import sys
 
-from src.molecule import to_graph, find_mol_sym_atoms, submolecule
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
+from molecule import to_graph, find_mol_sym_atoms, submolecule
 
 
 def test_to_graph_nodes_and_edges():

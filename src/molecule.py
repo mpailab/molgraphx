@@ -201,8 +201,9 @@ def submolecule(
 
     # Build the induced substructure (may be disconnected). Also capture a
     # mapping from `sub` atom indices to original `mol` atom indices.
-    atom_map_sub = []
-    sub = PathToSubmol(mol, bond_ids, atomMap=atom_map_sub)
+    atom_map_sub = {}
+    sub = PathToSubmol(mol, list(bond_ids), atomMap=atom_map_sub)
+    atom_map_sub = {v: k for k, v in atom_map_sub.items()}
 
     # Obtain connected components as atom index tuples (fast, no sanitize)
     frag_atom_maps = []

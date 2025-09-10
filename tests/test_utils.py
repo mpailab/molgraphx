@@ -1,8 +1,11 @@
 import pytest
 import torch
+import os
+import sys
 
-from src import utils as U
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+import utils as U
 
 def test_gnn_gr_wrapper_picks_target_column():
     def model(batch):

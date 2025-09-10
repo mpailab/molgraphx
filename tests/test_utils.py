@@ -5,9 +5,16 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import utils as U
-
+@pytest.mark.skipif(
+    pytest.importorskip(
+        "torch_geometric", reason="requires torch_geometric"
+    )
+    is None,
+    reason="torch_geometric missing",
+)
 def test_gnn_gr_wrapper_picks_target_column():
+    import utils as U
+
     def model(batch):
         return torch.tensor([[1.0, 2.0], [3.0, 4.0]])
 
@@ -16,7 +23,16 @@ def test_gnn_gr_wrapper_picks_target_column():
     assert out == [2.0, 4.0]
 
 
+@pytest.mark.skipif(
+    pytest.importorskip(
+        "torch_geometric", reason="requires torch_geometric"
+    )
+    is None,
+    reason="torch_geometric missing",
+)
 def test_gnn_gc_wrapper_softmax_and_pick():
+    import utils as U
+
     def model(batch):
         return torch.tensor([[0.0, 0.0], [0.0, 1.0]])
 
@@ -40,6 +56,7 @@ def test_gnn_gc_wrapper_softmax_and_pick():
 def test_get_scores_short_circuit_path(monkeypatch):
     from rdkit import Chem
     from torch_geometric.data import Data
+    import utils as U
 
     # Dummy featurizer returning minimal Data objects
     def featurizer(m):

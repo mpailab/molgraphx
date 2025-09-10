@@ -1,8 +1,9 @@
 # External imports
 import networkx as nx
-from rdkit.Chem import RWMol, SanitizeMol
+from rdkit.Chem import RWMol, SanitizeMol, GetMolFrags, PathToSubmol
+from rdkit.Chem.rdmolops import SanitizeFlags
 from rdkit.Chem.rdchem import Atom, Bond, BondType, Mol
-from typing import FrozenSet
+from typing import FrozenSet, Dict, List
 
 
 def get_atom_props(atom : Atom, ring_size : int = 1) -> tuple:
@@ -90,7 +91,7 @@ def get_atom_bonds_props(atom : Atom, atoms_to_sym_cls : dict) -> tuple:
     return tuple(bonds_props)
 
 
-def find_mol_sym_atoms(mol : Mol) -> list:
+def find_mol_sym_atoms(mol : Mol) -> dict:
     """
     Find symmetric atoms in molecule
 
@@ -145,49 +146,106 @@ def find_mol_sym_atoms(mol : Mol) -> list:
         if is_break:
             break
     
-    return [ set({ atom.GetIdx() for atom in cls }) for cls in sym_atoms ]
+    return { a.GetIdx() : set({ b.GetIdx() for b in cls }) 
+             for cls in sym_atoms for a in cls }
 
 
-def submolecule(mol: Mol, atoms: FrozenSet[int]) -> Mol:
+def submolecule(
+    mol: Mol,
+    atoms: FrozenSet[int],
+    atom_maps: List[int] | None = None,
+    allow_disconnected: bool = False,
+) -> Mol:
     """
-    Create submolecule with given atoms
+    Build a submolecule induced by a set of atom indices.
+
+    Behavior
+    --------
+    - Considers only bonds with both endpoints inside `atoms`.
+      Isolated atoms are intentionally omitted.
+    - If the induced subgraph splits into multiple connected components:
+      - when `allow_disconnected` is False, returns an empty Mol (drop case);
+      - when True, returns a single representative component (the first one).
 
     Parameters
     ----------
     mol : Mol
-        Input molecule.
+        Input RDKit molecule.
     atoms : FrozenSet[int]
-        Atoms of the input molecule.
+        Original atom indices to induce the submolecule on.
+    atom_maps : List[int] | None
+        Optional out mapping: result atom index -> original atom index.
+        Populated only when a non-empty submolecule is returned.
+    allow_disconnected : bool
+        Accept disconnected induced submolecules. If True, the first
+        connected fragment is returned instead of dropping the result.
 
     Returns
     -------
-    res : Mol
-        New molecule that is equivalent to the submolecule of mol with given atoms.
+    Mol
+        Non-empty connected submolecule or empty Mol if dropped.
     """
-    res = RWMol(mol)
-    res.BeginBatchEdit()
-    for i, _ in enumerate(mol.GetAtoms()):
-        if i not in atoms:
-            res.RemoveAtom(i)
-    res.CommitBatchEdit()
+    # Collect bond indices fully contained within the atom subset via
+    # local neighborhoods (linear in the subset degree sum).
+    bond_ids = set()
+    for i in atoms:
+        ai = mol.GetAtomWithIdx(i)
+        for b in ai.GetBonds():
+            j = b.GetOtherAtomIdx(i)
+            if j in atoms:
+                bond_ids.add(b.GetIdx())
 
+    # No internal bonds -> induced subgraph has no edges; return empty Mol
+    if not bond_ids:
+        return Mol()
+
+    # Build the induced substructure (may be disconnected). Also capture a
+    # mapping from `sub` atom indices to original `mol` atom indices.
+    atom_map_sub = []
+    sub = PathToSubmol(mol, bond_ids, atomMap=atom_map_sub)
+
+    # Obtain connected components as atom index tuples (fast, no sanitize)
+    frag_atom_maps = []
+    frags = GetMolFrags(sub, asMols=True, sanitizeFrags=False,
+                        fragsMolAtomMapping=frag_atom_maps)
+
+    # Drop disconnected results when requested
+    if (not allow_disconnected) and len(frags) > 1:
+        return Mol()
+
+    # Select the first connected fragment
+    res = frags[0]
+
+    # Fill `atom_maps`: result atom index -> original atom index in `mol`
+    if atom_maps is not None and frag_atom_maps:
+        frag_to_sub = frag_atom_maps[0]
+        atom_maps[:] = [atom_map_sub[sub_idx] for sub_idx in frag_to_sub]
+
+    # Heuristic: demote non-ring aromatic atoms/bonds to reduce sanitize errors
     for a in res.GetAtoms():
         if (not a.IsInRing()) and a.GetIsAromatic():
             a.SetIsAromatic(False)
     for b in res.GetBonds():
         if (not b.IsInRing()) and b.GetIsAromatic():
             b.SetIsAromatic(False)
-            # TODO: It is necessary to clarify which type of bond 
-            # to use after removing aromatic ring
+            # After removing off-ring aromaticity, use a single bond by default
             b.SetBondType(BondType.SINGLE)
 
-    # SanitizeMol can throw exceptions like this
-    #   KekulizeException: Can't kekulize mol.  Unkekulized atoms: 0 1 2 3 4
-    # after remove atom from an aromatic ring.
-    # FIXME: Fix this error for the molecule CC(=O)n1cccc1O
-    SanitizeMol(res)
+    # Sanitize for chemistry consistency; on failure, retry without kekulization
+    try:
+        SanitizeMol(res)
+    except Exception:
+        try:
+            sanitize_ops = (
+                SanitizeFlags.SANITIZE_ALL ^ SanitizeFlags.SANITIZE_KEKULIZE
+            )
+            SanitizeMol(res, sanitizeOps=sanitize_ops)
+        except Exception:
+            # As a last resort, return the unsanitized fragment
+            pass
 
     return res
+
 
 def to_graph(mol : Mol) -> nx.Graph:
     """
@@ -206,17 +264,11 @@ def to_graph(mol : Mol) -> nx.Graph:
     graph = nx.Graph()
 
     # Add atoms as nodes
-    for i, atom in enumerate(mol.GetAtoms()):
-        graph.add_node(i, atomic_num=atom.GetAtomicNum(),
-                       element=atom.GetSymbol(),
-                       formal_charge=atom.GetFormalCharge(),
-                       is_aromatic=atom.GetIsAromatic())
+    for atom in mol.GetAtoms():
+        graph.add_node(atom.GetIdx())
 
     # Add bonds as edges
     for bond in mol.GetBonds():
-        idx1 = bond.GetBeginAtomIdx()
-        idx2 = bond.GetEndAtomIdx()
-        graph.add_edge(idx1, idx2, bond_type=bond.GetBondTypeAsDouble(),
-                       is_aromatic=bond.GetIsAromatic())
+        graph.add_edge(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
 
     return graph

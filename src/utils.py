@@ -3,7 +3,7 @@ from rdkit.Chem.rdchem import Mol
 import torch
 from torch.nn.functional import softmax
 from torch_geometric.data import Batch, Data
-from typing import Callable, List, FrozenSet
+from typing import Callable, List, FrozenSet, Tuple
 
 # Internal imports
 from methods import AtomsExplainer
@@ -34,9 +34,7 @@ def get_scores(mol : Mol,
                explainable_model : torch.nn.Module, 
                target : int,
                explainer_kwargs,
-               mode : str = "classification", 
-               device : torch.device = torch.device("cpu"),
-               is_sym : bool = False):
+               mode : str = "classification"):
     
     if mode == "classification":
         predict_func = GnnNetsGC2valueFunc(explainable_model, target)
@@ -45,22 +43,11 @@ def get_scores(mol : Mol,
     else:
         predict_func = GnnNetsGC2valueFunc(explainable_model, target)
 
-    def predictor(mols: List[Mol]) -> List[float]:
+    def predictor(mols: List[Mol] | Tuple[Mol]) -> List[float]:
         data = Batch.from_data_list([ featurizer(mol) for mol in mols ])
         return predict_func(data)
 
-    explainer = AtomsExplainer(predictor, device=device, **explainer_kwargs)
-
-    scores = explainer(mol, is_sym=is_sym)
+    explainer = AtomsExplainer(predictor, **explainer_kwargs)
+    scores = explainer(mol)
 
     return scores
-
-
-def coalition_id(coalition: List[FrozenSet[int]]) -> FrozenSet[int]:
-    return frozenset().union(*coalition)
-
-
-def weak_shapley_score(node : FrozenSet[int],
-                       parent_prediction : float, 
-                       child_prediction : float) -> float:
-    return (1 - child_prediction / parent_prediction) / len(node)

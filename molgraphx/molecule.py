@@ -154,7 +154,7 @@ def submolecule(
     mol: Mol,
     atoms: FrozenSet[int],
     atom_maps: List[int] | None = None,
-    allow_disconnected: bool = False,
+    is_connect: bool = False,
 ) -> Mol:
     """
     Build a submolecule induced by a set of atom indices.
@@ -164,7 +164,7 @@ def submolecule(
     - Considers only bonds with both endpoints inside `atoms`.
       Isolated atoms are intentionally omitted.
     - If the induced subgraph splits into multiple connected components:
-      - when `allow_disconnected` is False, returns an empty Mol (drop case);
+      - when `is_connect` is True, returns an empty Mol (drop case);
       - when True, returns a single representative component (the first one).
 
     Parameters
@@ -176,8 +176,8 @@ def submolecule(
     atom_maps : List[int] | None
         Optional out mapping: result atom index -> original atom index.
         Populated only when a non-empty submolecule is returned.
-    allow_disconnected : bool
-        Accept disconnected induced submolecules. If True, the first
+    is_connect : bool
+        Reject disconnected induced submolecules. If False, the first
         connected fragment is returned instead of dropping the result.
 
     Returns
@@ -211,7 +211,7 @@ def submolecule(
                         fragsMolAtomMapping=frag_atom_maps)
 
     # Drop disconnected results when requested
-    if (not allow_disconnected) and len(frags) > 1:
+    if is_connect and len(frags) > 1:
         return Mol()
 
     # Select the first connected fragment

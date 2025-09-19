@@ -6,7 +6,7 @@ from torch_geometric.data import Batch, Data
 from typing import Callable, List, FrozenSet, Tuple
 
 # Internal imports
-from methods import AtomsExplainer
+from molgraphx.methods import AtomsExplainer
 
 
 def GnnNetsGR2valueFunc(gnnNets, target):

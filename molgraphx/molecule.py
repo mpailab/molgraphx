@@ -16,7 +16,7 @@ def symmetry_classes(mol: Mol, symmetry: bool = True) -> List[Set[int]]:
         return [set({i}) for i in range(mol.GetNumAtoms())]
 
     try:
-        groups = CanonicalRankAtoms(mol, breakTies=True)
+        groups = CanonicalRankAtoms(mol, breakTies=False)
         cls: Dict[int, Set[int]] = {}
         for i, g in enumerate(groups):
             cls.setdefault(int(g), set()).add(i)

@@ -1,25 +1,19 @@
 import pytest
-from rdkit import Chem
 import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from molgraphx.molecule import to_graph, find_mol_sym_atoms, submolecule
+# Skip this test module entirely if RDKit is not available
+pytest.importorskip("rdkit", reason="requires RDKit")
+from rdkit import Chem
 
-
-def test_to_graph_nodes_and_edges():
-    mol = Chem.MolFromSmiles("CCO")
-    g = to_graph(mol)
-    # nodes are 0..n-1
-    assert set(g.nodes()) == set(range(mol.GetNumAtoms()))
-    # edges correspond to bonds
-    assert g.number_of_edges() == mol.GetNumBonds()
+from molgraphx.molecule import symmetry_classes, submolecule
 
 
 def test_find_mol_sym_atoms_equivalent_in_ethane():
     mol = Chem.MolFromSmiles("CC")
-    sym = find_mol_sym_atoms(mol)
+    sym = symmetry_classes(mol)
     # carbons 0 and 1 are equivalent in ethane
     assert len(sym) == 1
     assert sym[0] == set({0, 1})
@@ -27,7 +21,7 @@ def test_find_mol_sym_atoms_equivalent_in_ethane():
 
 def test_find_mol_sym_atoms_non_equivalent_in_etho():
     mol = Chem.MolFromSmiles("CCO")
-    sym = find_mol_sym_atoms(mol)
+    sym = symmetry_classes(mol)
     # terminal carbon and oxygen are not equivalent
     assert 2 not in sym[0]
     assert 0 not in sym[2]

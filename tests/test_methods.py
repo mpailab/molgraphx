@@ -1,11 +1,14 @@
 import pytest
 import torch
 import networkx as nx
-from rdkit import Chem
 import os
 import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Skip this test module entirely if RDKit is not available
+pytest.importorskip("rdkit", reason="requires RDKit")
+from rdkit import Chem
 
 from molgraphx.methods import AtomsExplainer
 
@@ -35,4 +38,3 @@ def test_build_coalition_graph_is_dag_and_has_root():
     # root coalition is all atom indices
     root = frozenset(range(mol.GetNumAtoms()))
     assert root in g.nodes
-

@@ -2,8 +2,7 @@
 from rdkit.Chem.rdchem import Mol
 import torch
 from torch.nn.functional import softmax
-from torch_geometric.data import Batch, Data
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Any
 
 # Internal imports
 from molgraphx.methods import AtomsExplainer
@@ -62,7 +61,7 @@ def GnnNetsGC2valueFunc(gnnNets: torch.nn.Module, target: int):
 
 def get_scores(
     mol: Mol,
-    featurizer: Callable[[Mol], Data],
+    featurizer: Callable[[Mol], Any],
     explainable_model: torch.nn.Module,
     target: int,
     explainer_kwargs,
@@ -99,6 +98,8 @@ def get_scores(
         predict_func = GnnNetsGC2valueFunc(explainable_model, target)
 
     def predictor(mols: Iterable[Mol]) -> torch.Tensor:
+        # Local import to avoid importing torch_geometric at package import time
+        from torch_geometric.data import Batch
         data = Batch.from_data_list([featurizer(m) for m in mols])
         return predict_func(data)
 

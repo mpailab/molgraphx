@@ -1,0 +1,6 @@
+include README.md
+include DESCRIPTION.md
+include LICENSE
+recursive-include molgraphx *.py
+recursive-exclude tests *
+

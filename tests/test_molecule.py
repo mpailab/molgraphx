@@ -37,7 +37,7 @@ def test_submolecule_connected_fragment_and_mapping():
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 1})
     atom_maps: list[int] = []
-    sub = submolecule(mol, atoms, atom_maps, connected=False)
+    sub = submolecule(mol, atoms, atom_maps)
     assert sub.GetNumAtoms() == 2
     # mapping from sub indices to original indices should be 0 and 1 in some order
     assert set(atom_maps) == {0, 1}
@@ -48,7 +48,7 @@ def test_submolecule_aromatic_subset():
     mol = Chem.MolFromSmiles("c1ccccc1")
     atoms = frozenset({0, 1, 2})
     atom_maps: list[int] = []
-    sub = submolecule(mol, atoms, atom_maps, connected=False)
+    sub = submolecule(mol, atoms, atom_maps)
     assert sub.GetNumAtoms() == 3
     assert sub.GetNumBonds() == 2
 
@@ -56,7 +56,7 @@ def test_submolecule_aromatic_subset():
 def test_submolecule_no_internal_bonds_returns_empty():
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 2})  # not directly bonded in this molecule
-    sub = submolecule(mol, atoms, connected=False)
+    sub = submolecule(mol, atoms)
     assert sub.GetNumAtoms() == 0
 
 
@@ -64,19 +64,15 @@ def test_submolecule_drop_disconnected_result():
     # Two separate ethane fragments
     mol = Chem.MolFromSmiles("CC.CC")
     atoms = frozenset(range(mol.GetNumAtoms()))
-    # connected=True should drop and return empty
-    sub_drop = submolecule(mol, atoms, connected=True)
+    # disconnected result should drop and return empty
+    sub_drop = submolecule(mol, atoms)
     assert sub_drop.GetNumAtoms() == 0
-    # connected=False returns a representative connected component
-    atom_maps: list[int] = []
-    sub_keep = submolecule(mol, atoms, atom_maps, connected=False)
-    assert sub_keep.GetNumAtoms() > 0
-    assert len(atom_maps) == sub_keep.GetNumAtoms()
+    # previous behavior with connected=False is no longer available
 
 
 def test_submolecule_subset_disconnected_in_same_molecule():
     # In ethanol, atoms {0,2} are disconnected in the induced subgraph
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 2})
-    empty = submolecule(mol, atoms, connected=True)
+    empty = submolecule(mol, atoms)
     assert empty.GetNumAtoms() == 0

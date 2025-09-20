@@ -1,26 +1,23 @@
 # External imports
-import rdkit
 import torch
-from torch_geometric.utils import from_networkx
 import networkx as nx
 from rdkit.Chem.rdchem import Mol
-from typing import Callable, List, Tuple, FrozenSet, Set, Dict, Generator
+from typing import Callable, List, Iterable
 from collections import deque
 
 # Internal imports
 from molgraphx.molecule import symmetry_classes, articulation_classes, submolecule
 
-# Type aliases
-PredictorFn = Callable[[Generator[Mol, None, None] | List[Mol] | Tuple[Mol]], torch.Tensor]
 
 SHAPLEY_MODES = set({'absolute', 'relative'})
+
     
 class AtomsExplainer(object):
-    """Explain atoms of molecular graphs"""
+    """Atom-level explanations for molecular graphs."""
 
     def __init__(
         self,
-        predictor: PredictorFn,
+        predictor: Callable[[Iterable[Mol]], torch.Tensor],
         min_atoms: int = 5,
         symmetry: bool = True,
         balanced: bool = True,
@@ -28,21 +25,23 @@ class AtomsExplainer(object):
         device: torch.device = torch.device("cpu")
     ):
         """
-        Initialize atoms explainer.
+        Initialize the atoms explainer.
 
         Parameters
         ----------
-        predictor : PredictorFn
-            Function mapping a batch of molecules to target values.
+        predictor : Callable[[Iterable[Mol]], torch.Tensor]
+            Callable that maps a batch (iterable) of RDKit molecules to target values.
         min_atoms : int
-            Minimal number of atoms to continue splitting submolecules.
+            Minimum number of atoms allowed in any submolecule (stopping criterion).
         symmetry : bool
-            Whether to taken into account molecular symmetry.
+            Whether to account for molecular symmetry (group atoms into classes).
+        balanced : bool
+            If True, average per-atom contributions by the number of times
+            an atom appears across edges.
         shapley_mode : str
-            Mode for calculating Shapley values of atoms. 
-            Possible values:
-            - 'absolute': ...
-            - 'relative': ...
+            Atom contribution mode:
+            - 'absolute': parent_pred - child_pred
+            - 'relative': 1 - child_pred / parent_pred
         """
 
         self.predictor = predictor
@@ -58,7 +57,7 @@ class AtomsExplainer(object):
 
     def __call__(self, mol: Mol) -> torch.Tensor:
         """
-        Explain atoms for a molecule.
+        Compute atom prediction scores for a molecule.
 
         Parameters
         ----------
@@ -77,17 +76,17 @@ class AtomsExplainer(object):
         if atom_num <= self.min_atoms:
             return (self.predictor([mol]) / atom_num).repeat(atom_num)
         
-        # Build the coalition graph (DAG) that organizes submolecules
+        # Build the coalition DAG that organizes connected submolecules
         graph = self._build_coalition_graph(mol)
 
         # Batched predictions for all submolecules in the coalition graph
-        
         coalitions, mols = zip(*graph.nodes(data="molecule"))
         predictions = { coalitions[i] : p for i, p in enumerate(self.predictor(mols)) }
 
         atom_scores = torch.zeros(atom_num, dtype=torch.float, device=self.device)
         atom_factor = torch.zeros(atom_num, dtype=torch.int, device=self.device)
 
+        # Accumulate per-atom contributions over coalition graph edges
         for u, v, atoms in graph.edges(data='atoms'):
             
             if self.shapley_mode == 'absolute':
@@ -102,59 +101,27 @@ class AtomsExplainer(object):
             atom_scores[atoms] += score / len(atoms)
             atom_factor[atoms] += 1
 
+        # Normalize by the number of times each atom was updated
         if self.balanced:
             atom_scores /= atom_factor
 
         return atom_scores
 
-        # atom_num = mol.GetNumAtoms()
-
-        # # Skip small molecules
-        # if atom_num <= self.min_atoms:
-        #     return (self.predictor([mol]) / atom_num).repeat(atom_num)
-        
-        # # Build the coalition graph (DAG) that organizes submolecules
-        # graph = self._build_coalition_graph(mol)
-        # data = from_networkx(graph, group_edge_attrs=['atoms'])
-
-        # # Batched predictions for all submolecules in the coalition graph
-        # predictions = self.predictor(mol for _, mol in graph.nodes(data="molecule"))
-
-        # if self.shapley_mode == 'absolute':
-        #     scores = predictions[data.edge_index[0]] - predictions[data.edge_index[1]]
-
-        # elif self.shapley_mode == 'relative':
-        #     scores = 1 - predictions[data.edge_index[1]] / predictions[data.edge_index[0]]
-
-        # else:
-        #     scores = None
-
-        # scores /= data.edge_attr.sum(dim=1)
-        # print(scores.size(), scores)
-        # print(data.edge_attr.size(), data.edge_attr)
-        # atom_scores = (scores * data.edge_attr).sum(dim=1)
-
-        # if self.balanced:
-        #     atom_scores /= data.edge_attr.sum(dim=1)
-
-        # return atom_scores
-
     # --- Internal helpers -------------------------------------------------
 
     def _build_coalition_graph(self, mol: Mol) -> nx.DiGraph:
         """
-        Build the coalition graph (DAG) for the given molecule.
+        Build the coalition DAG for the given molecule.
 
-        - Nodes: coalitions (frozenset of original atom indices). The induced
-          subgraph can split into disconnected but equivalent components; we
-          keep one representative connected component in the "molecule"
-          attribute.
-        - Edges: parent -> child if the child’s molecule is a submolecule of
-          the parent’s (obtained by removing exactly one factor-graph node).
+        - Nodes: coalitions (frozenset of original atom indices). The node
+          stores a connected representative submolecule in the "molecule" attribute.
+        - Edges: parent -> child if the child’s molecule is obtained from the
+          parent’s by removing exactly one symmetry class that does not break
+          connectivity of the factor graph.
 
         Node attributes
         ---------------
-        - "molecule": RDKit Mol of the representative connected submolecule.
+        - "molecule": RDKit Mol of the connected submolecule.
         - "orig_atoms": list[int] mapping submolecule atom index -> original
           atom index in the input molecule.
 
@@ -175,16 +142,13 @@ class AtomsExplainer(object):
             orig_atoms = node_attrs["orig_atoms"]
             atom_ids = range(cur_mol.GetNumAtoms())
 
-            # print("\n---------------------------------------------------")
-            # print(coalition, cur_mol.GetNumAtoms())
-
             # Find symmetry classes of atoms in cur_mol
             sym_classes = symmetry_classes(cur_mol, self.symmetry)
 
-            # Find articulation classes which break connectivity of cur_mol
+            # Classes whose removal disconnects the molecule cur_mol
             aps = articulation_classes(cur_mol, sym_classes)
 
-            # Full set of atom indices for cur_mol (for quick difference)
+            # Full set of atom indices for cur_mol (for difference operations)
             all_nodes_id = frozenset(atom_ids)
 
             # Iterate classes (potential removals)
@@ -193,7 +157,7 @@ class AtomsExplainer(object):
                 if cls_idx in aps:
                     continue
 
-                # Size threshold on child submolecule
+                # Enforce size threshold on the child submolecule
                 if cur_mol.GetNumAtoms() < len(cls_atoms) + self.min_atoms:
                     continue
 
@@ -202,7 +166,7 @@ class AtomsExplainer(object):
                 child_nodes_id = all_nodes_id.difference(node_atoms)
                 child_coalition = frozenset(orig_atoms[i] for i in child_nodes_id)
 
-                # Already seen this coalition — skip duplicate
+                # Already seen this coalition — add edge and skip
                 if graph.has_node(child_coalition):
                     graph.add_edge(coalition, child_coalition, 
                                    atoms=tuple(orig_atoms[i] for i in node_atoms))
@@ -220,6 +184,5 @@ class AtomsExplainer(object):
                 graph.add_edge(coalition, child_coalition, 
                                atoms=tuple(orig_atoms[i] for i in node_atoms))
                 stack.append(child_coalition)
-                # print(coalition, " -> ", child_coalition)
 
         return graph

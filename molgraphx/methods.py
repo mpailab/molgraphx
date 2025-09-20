@@ -169,7 +169,7 @@ class AtomsExplainer(object):
                 # Already seen this coalition — add edge and skip
                 if graph.has_node(child_coalition):
                     graph.add_edge(coalition, child_coalition, 
-                                   atoms=tuple(orig_atoms[i] for i in node_atoms))
+                                   atoms=[orig_atoms[i] for i in node_atoms])
                     continue
 
                 # Build child submolecule and map back to original atoms
@@ -182,7 +182,7 @@ class AtomsExplainer(object):
                 graph.add_node(child_coalition, molecule=child_mol, 
                                orig_atoms=tuple(orig_atoms[i] for i in atom_maps))
                 graph.add_edge(coalition, child_coalition, 
-                               atoms=tuple(orig_atoms[i] for i in node_atoms))
+                               atoms=[orig_atoms[i] for i in node_atoms])
                 stack.append(child_coalition)
 
         return graph

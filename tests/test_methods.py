@@ -1,17 +1,18 @@
 import pytest
+import torch
 import networkx as nx
 from rdkit import Chem
 import os
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from methods import AtomsExplainer
+from molgraphx.methods import AtomsExplainer
 
 def test_explainer_small_molecule_short_circuit():
     # predictor returns a constant scalar
     def predictor(mols):
-        return [10.0 for _ in mols]
+        return torch.tensor([10.0 for _ in mols])
 
     mol = Chem.MolFromSmiles("CC")
     explainer = AtomsExplainer(predictor, min_atoms=mol.GetNumAtoms())

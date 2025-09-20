@@ -3,7 +3,7 @@ import torch
 import os
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 @pytest.mark.skipif(
     pytest.importorskip(
@@ -13,14 +13,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "s
     reason="torch_geometric missing",
 )
 def test_gnn_gr_wrapper_picks_target_column():
-    import utils as U
+    import molgraphx.utils as U
 
     def model(batch):
         return torch.tensor([[1.0, 2.0], [3.0, 4.0]])
 
     f = U.GnnNetsGR2valueFunc(model, target=1)
     out = f(None)
-    assert out == [2.0, 4.0]
+    assert out.tolist() == [2.0, 4.0]
 
 
 @pytest.mark.skipif(
@@ -31,7 +31,7 @@ def test_gnn_gr_wrapper_picks_target_column():
     reason="torch_geometric missing",
 )
 def test_gnn_gc_wrapper_softmax_and_pick():
-    import utils as U
+    import molgraphx.utils as U
 
     def model(batch):
         return torch.tensor([[0.0, 0.0], [0.0, 1.0]])
@@ -56,7 +56,7 @@ def test_gnn_gc_wrapper_softmax_and_pick():
 def test_get_scores_short_circuit_path(monkeypatch):
     from rdkit import Chem
     from torch_geometric.data import Data
-    import utils as U
+    import molgraphx.utils as U
 
     # Dummy featurizer returning minimal Data objects
     def featurizer(m):

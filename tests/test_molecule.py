@@ -3,9 +3,9 @@ from rdkit import Chem
 import os
 import sys
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from molecule import to_graph, find_mol_sym_atoms, submolecule
+from molgraphx.molecule import to_graph, find_mol_sym_atoms, submolecule
 
 
 def test_to_graph_nodes_and_edges():
@@ -21,8 +21,8 @@ def test_find_mol_sym_atoms_equivalent_in_ethane():
     mol = Chem.MolFromSmiles("CC")
     sym = find_mol_sym_atoms(mol)
     # carbons 0 and 1 are equivalent in ethane
-    assert sym[0] == {0, 1}
-    assert sym[1] == {0, 1}
+    assert len(sym) == 1
+    assert sym[0] == set({0, 1})
 
 
 def test_find_mol_sym_atoms_non_equivalent_in_etho():
@@ -37,7 +37,7 @@ def test_submolecule_connected_fragment_and_mapping():
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 1})
     atom_maps: list[int] = []
-    sub = submolecule(mol, atoms, atom_maps, allow_disconnected=True)
+    sub = submolecule(mol, atoms, atom_maps, connected=False)
     assert sub.GetNumAtoms() == 2
     # mapping from sub indices to original indices should be 0 and 1 in some order
     assert set(atom_maps) == {0, 1}
@@ -48,7 +48,7 @@ def test_submolecule_aromatic_subset():
     mol = Chem.MolFromSmiles("c1ccccc1")
     atoms = frozenset({0, 1, 2})
     atom_maps: list[int] = []
-    sub = submolecule(mol, atoms, atom_maps, allow_disconnected=True)
+    sub = submolecule(mol, atoms, atom_maps, connected=False)
     assert sub.GetNumAtoms() == 3
     assert sub.GetNumBonds() == 2
 
@@ -56,7 +56,7 @@ def test_submolecule_aromatic_subset():
 def test_submolecule_no_internal_bonds_returns_empty():
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 2})  # not directly bonded in this molecule
-    sub = submolecule(mol, atoms, allow_disconnected=True)
+    sub = submolecule(mol, atoms, connected=False)
     assert sub.GetNumAtoms() == 0
 
 
@@ -64,12 +64,12 @@ def test_submolecule_drop_disconnected_result():
     # Two separate ethane fragments
     mol = Chem.MolFromSmiles("CC.CC")
     atoms = frozenset(range(mol.GetNumAtoms()))
-    # allow_disconnected=False should drop and return empty
-    sub_drop = submolecule(mol, atoms, allow_disconnected=False)
+    # connected=True should drop and return empty
+    sub_drop = submolecule(mol, atoms, connected=True)
     assert sub_drop.GetNumAtoms() == 0
-    # allow_disconnected=True returns a representative connected component
+    # connected=False returns a representative connected component
     atom_maps: list[int] = []
-    sub_keep = submolecule(mol, atoms, atom_maps, allow_disconnected=True)
+    sub_keep = submolecule(mol, atoms, atom_maps, connected=False)
     assert sub_keep.GetNumAtoms() > 0
     assert len(atom_maps) == sub_keep.GetNumAtoms()
 
@@ -78,5 +78,5 @@ def test_submolecule_subset_disconnected_in_same_molecule():
     # In ethanol, atoms {0,2} are disconnected in the induced subgraph
     mol = Chem.MolFromSmiles("CCO")
     atoms = frozenset({0, 2})
-    empty = submolecule(mol, atoms, allow_disconnected=False)
+    empty = submolecule(mol, atoms, connected=True)
     assert empty.GetNumAtoms() == 0

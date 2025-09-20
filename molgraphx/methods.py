@@ -8,7 +8,7 @@ from typing import Callable, List, Tuple, FrozenSet, Set, Dict, Generator
 from collections import deque
 
 # Internal imports
-from molgraphx.molecule import find_mol_sym_atoms, submolecule, to_graph
+from molgraphx.molecule import symmetry_classes, articulation_classes, submolecule
 
 # Type aliases
 PredictorFn = Callable[[Generator[Mol, None, None] | List[Mol] | Tuple[Mol]], torch.Tensor]
@@ -139,6 +139,8 @@ class AtomsExplainer(object):
 
         # return atom_scores
 
+    # --- Internal helpers -------------------------------------------------
+
     def _build_coalition_graph(self, mol: Mol) -> nx.DiGraph:
         """
         Build the coalition graph (DAG) for the given molecule.
@@ -153,12 +155,8 @@ class AtomsExplainer(object):
         Node attributes
         ---------------
         - "molecule": RDKit Mol of the representative connected submolecule.
-        - "orig_atoms": list[list[int]] mapping submolecule atom index -> list of
-          original atom indices in the input molecule.
-        - "prediction": model output for this submolecule.
-        - "synergy": contribution of this coalition to the model output 
-          exclusive of all successors.
-        - "successors": set of all nodes reachable from a given node.
+        - "orig_atoms": list[int] mapping submolecule atom index -> original
+          atom index in the input molecule.
 
         The root coalition contains all atom indices of the input molecule.
         """
@@ -168,7 +166,7 @@ class AtomsExplainer(object):
         stack = deque([root])
 
         graph = nx.DiGraph()
-        graph.add_node(root, molecule=mol, orig_atoms=list(atom_ids))
+        graph.add_node(root, molecule=mol, orig_atoms=tuple(atom_ids))
 
         while len(stack) > 0:
             coalition = stack.popleft()
@@ -180,62 +178,47 @@ class AtomsExplainer(object):
             # print("\n---------------------------------------------------")
             # print(coalition, cur_mol.GetNumAtoms())
 
-            # Atom equivalence relation (symmetry-aware if requested)
-            if self.symmetry:
-                sym_atoms = find_mol_sym_atoms(cur_mol)
-            else:
-                sym_atoms = [ set({i}) for i in atom_ids ]
+            # Find symmetry classes of atoms in cur_mol
+            sym_classes = symmetry_classes(cur_mol, self.symmetry)
 
-            # Factor (quotient) graph for the current submolecule
-            cur_graph = to_graph(cur_mol)
-            # print(cur_graph.nodes)
-            fac_graph = nx.quotient_graph(cur_graph, sym_atoms)
-
-            # Articulation points: removing them disconnects the factor graph
-            aps = set(nx.articulation_points(fac_graph))
+            # Find articulation classes which break connectivity of cur_mol
+            aps = articulation_classes(cur_mol, sym_classes)
 
             # Full set of atom indices for cur_mol (for quick difference)
             all_nodes_id = frozenset(atom_ids)
 
-            # Iterate all nodes in the current factor graph
-            for node in fac_graph.nodes:
-
-                # print(node, node in aps, cur_mol.GetNumAtoms() < len(node) + self.min_atoms)
-
-                # Keep the factor graph connected in the child
-                if node in aps:
+            # Iterate classes (potential removals)
+            for cls_idx, cls_atoms in enumerate(sym_classes):
+                # Keep the molecule connected after removal
+                if cls_idx in aps:
                     continue
 
                 # Size threshold on child submolecule
-                if cur_mol.GetNumAtoms() < len(node) + self.min_atoms:
+                if cur_mol.GetNumAtoms() < len(cls_atoms) + self.min_atoms:
                     continue
 
                 # Child coalition (original indexing)
-                child_nodes_id = all_nodes_id - node
-                child_coalition = frozenset({orig_atoms[i] for i in child_nodes_id})
+                node_atoms = tuple(cls_atoms)
+                child_nodes_id = all_nodes_id.difference(node_atoms)
+                child_coalition = frozenset(orig_atoms[i] for i in child_nodes_id)
 
-                # Already seen this coalition — skip duplicate  
-                if child_coalition in graph.nodes:
-                    graph.add_edge(coalition, child_coalition,
-                                   atoms=[orig_atoms[i] for i in node])
-                    # print(coalition, " -> ", child_coalition)
+                # Already seen this coalition — skip duplicate
+                if graph.has_node(child_coalition):
+                    graph.add_edge(coalition, child_coalition, 
+                                   atoms=tuple(orig_atoms[i] for i in node_atoms))
                     continue
 
                 # Build child submolecule and map back to original atoms
-                atom_maps = []
+                atom_maps: List[int] = []
                 child_mol = submolecule(cur_mol, child_nodes_id, atom_maps)
                 if child_mol.GetNumAtoms() < self.min_atoms:
                     continue
 
-                # Map child atoms back to original atom sets.
-                child_orig_atoms = [ orig_atoms[i] for i in atom_maps ]
-
-                # Register the submolecule node and enqueue it for further expansion
-                graph.add_node(child_coalition, 
-                               molecule=child_mol, 
-                               orig_atoms=child_orig_atoms)
-                graph.add_edge(coalition, child_coalition,
-                               atoms=[orig_atoms[i] for i in node])
+                # Register node and edge; enqueue child
+                graph.add_node(child_coalition, molecule=child_mol, 
+                               orig_atoms=tuple(orig_atoms[i] for i in atom_maps))
+                graph.add_edge(coalition, child_coalition, 
+                               atoms=tuple(orig_atoms[i] for i in node_atoms))
                 stack.append(child_coalition)
                 # print(coalition, " -> ", child_coalition)
 

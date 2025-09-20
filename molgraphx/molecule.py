@@ -2,6 +2,7 @@
 import networkx as nx
 from rdkit.Chem import RWMol, SanitizeMol, GetMolFrags, PathToSubmol
 from rdkit.Chem.rdmolops import SanitizeFlags
+from rdkit.Chem.rdmolfiles import CanonicalRankAtoms
 from rdkit.Chem.rdchem import Atom, Bond, BondType, Mol
 from typing import FrozenSet, Dict, List, Set
 
@@ -147,6 +148,90 @@ def find_mol_sym_atoms(mol : Mol) -> List[Set[int]]:
             break
 
     return [ set({a.GetIdx() for a in cls}) for cls in sym_atoms ]
+
+
+def symmetry_classes(mol: Mol, symmetry: bool = True) -> List[Set[int]]:
+    """Return symmetry classes as sets of atom indices for ``mol``.
+
+    Uses RDKit's canonical ranking (fast, C++) and groups atoms by rank.
+    Falls back to singleton classes if symmetry handling is disabled.
+    """
+    if not symmetry:
+        return [set({i}) for i in range(mol.GetNumAtoms())]
+
+    try:
+        groups = CanonicalRankAtoms(mol, breakTies=True)
+        cls: Dict[int, Set[int]] = {}
+        for i, g in enumerate(groups):
+            cls.setdefault(int(g), set()).add(i)
+        return [cls[k] for k in sorted(cls.keys())]
+
+    except Exception:
+        # Fallback to trivial partition if RDKit ranking fails
+        return [set({i}) for i in range(mol.GetNumAtoms())]
+
+
+def articulation_classes(mol: Mol, classes: List[Set[int]]) -> Set[int]:
+    """Find articulation classes in the molecular graph of ``mol``."""
+
+    # Build undirected adjacency of symmetry classes
+    cls_of = {}
+    for ci, cls in enumerate(classes):
+        for a in cls:
+            cls_of[a] = ci
+    adj: Dict[int, Set[int]] = {i: set() for i in range(len(classes))}
+    for b in mol.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        ci, cj = cls_of[i], cls_of[j]
+        if ci != cj:
+            adj[ci].add(cj)
+            adj[cj].add(ci)
+
+    # Find articulation points in an undirected graph given by adj
+    time = 0                      # Global DFS timestamp (order of vertex discovery)
+    disc: Dict[int, int] = {}     # Discovery time for each vertex
+    low: Dict[int, int] = {}      # Lowest discovery time reachable from the subtree (low values)
+    parent: Dict[int, int | None] = {}  # Parent in the DFS tree
+    visited: Set[int] = set()     # Set of visited vertices
+    aps: Set[int] = set()         # Articulation points
+
+    def dfs(u: int, root: int) -> int:
+        nonlocal time
+        visited.add(u)
+        time += 1
+        disc[u] = low[u] = time # Initialize discovery time and low value
+        parent.setdefault(u, None)
+        children = 0
+        for v in adj.get(u, ()):  # neighbors
+            if v not in visited:
+                parent[v] = u
+                children += 1
+                dfs(v, root)
+
+                # Check if the subtree rooted with v has a connection to
+                # one of the ancestors of u
+                low[u] = min(low[u], low[v])
+
+                # Case 1: If u is not root and low value of one of its children is more
+                # than discovery value of u
+                if parent[u] is not None and low[v] >= disc[u]:
+                    aps.add(u)
+
+            elif v != parent[u]:
+                # Update low value of u for visited v (back-edge)
+                low[u] = min(low[u], disc[v])
+
+        # Case 2: u is root of DFS tree and has more than one child
+        if parent[u] is None and children > 1:
+            aps.add(u)
+
+        return children
+
+    for u in adj.keys():
+        if u not in visited:
+            dfs(u, u)
+
+    return aps
 
 
 def submolecule(

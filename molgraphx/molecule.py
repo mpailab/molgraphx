@@ -3,7 +3,7 @@ import networkx as nx
 from rdkit.Chem import RWMol, SanitizeMol, GetMolFrags, PathToSubmol
 from rdkit.Chem.rdmolops import SanitizeFlags
 from rdkit.Chem.rdchem import Atom, Bond, BondType, Mol
-from typing import FrozenSet, Dict, List
+from typing import FrozenSet, Dict, List, Set
 
 
 def get_atom_props(atom : Atom, ring_size : int = 1) -> tuple:
@@ -91,7 +91,7 @@ def get_atom_bonds_props(atom : Atom, atoms_to_sym_cls : dict) -> tuple:
     return tuple(bonds_props)
 
 
-def find_mol_sym_atoms(mol : Mol) -> dict:
+def find_mol_sym_atoms(mol : Mol) -> List[Set[int]]:
     """
     Find symmetric atoms in molecule
 
@@ -145,16 +145,15 @@ def find_mol_sym_atoms(mol : Mol) -> dict:
                     is_break = False
         if is_break:
             break
-    
-    return { a.GetIdx() : set({ b.GetIdx() for b in cls }) 
-             for cls in sym_atoms for a in cls }
+
+    return [ set({a.GetIdx() for a in cls}) for cls in sym_atoms ]
 
 
 def submolecule(
     mol: Mol,
     atoms: FrozenSet[int],
     atom_maps: List[int] | None = None,
-    is_connect: bool = False,
+    connected: bool = True,
 ) -> Mol:
     """
     Build a submolecule induced by a set of atom indices.
@@ -164,7 +163,7 @@ def submolecule(
     - Considers only bonds with both endpoints inside `atoms`.
       Isolated atoms are intentionally omitted.
     - If the induced subgraph splits into multiple connected components:
-      - when `is_connect` is True, returns an empty Mol (drop case);
+      - when `connected` is True, returns an empty Mol (drop case);
       - when True, returns a single representative component (the first one).
 
     Parameters
@@ -176,7 +175,7 @@ def submolecule(
     atom_maps : List[int] | None
         Optional out mapping: result atom index -> original atom index.
         Populated only when a non-empty submolecule is returned.
-    is_connect : bool
+    connected : bool
         Reject disconnected induced submolecules. If False, the first
         connected fragment is returned instead of dropping the result.
 
@@ -211,7 +210,7 @@ def submolecule(
                         fragsMolAtomMapping=frag_atom_maps)
 
     # Drop disconnected results when requested
-    if is_connect and len(frags) > 1:
+    if connected and len(frags) > 1:
         return Mol()
 
     # Select the first connected fragment

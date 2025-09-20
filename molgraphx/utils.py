@@ -3,29 +3,29 @@ from rdkit.Chem.rdchem import Mol
 import torch
 from torch.nn.functional import softmax
 from torch_geometric.data import Batch, Data
-from typing import Callable, List, FrozenSet, Tuple
+from typing import Callable, List, FrozenSet, Tuple, Generator
 
 # Internal imports
 from molgraphx.methods import AtomsExplainer
 
 
 def GnnNetsGR2valueFunc(gnnNets, target):
-    def value_func(batch) -> List[float]:
+    def value_func(batch) -> torch.Tensor:
         with torch.no_grad():
             result = gnnNets(batch)
             score = result[:, target]
-        return score.tolist()
+        return score
 
     return value_func
 
 
 def GnnNetsGC2valueFunc(gnnNets, target):
-    def value_func(batch) -> List[float]:
+    def value_func(batch) -> torch.Tensor:
         with torch.no_grad():
             logits = gnnNets(batch)
             probs = softmax(logits, dim=-1)
             score = probs[:, target]
-        return score.tolist()
+        return score
     return value_func
 
 
@@ -43,7 +43,7 @@ def get_scores(mol : Mol,
     else:
         predict_func = GnnNetsGC2valueFunc(explainable_model, target)
 
-    def predictor(mols: List[Mol] | Tuple[Mol]) -> List[float]:
+    def predictor(mols: Generator[Mol, None, None] | List[Mol] | Tuple[Mol]) -> torch.Tensor:
         data = Batch.from_data_list([ featurizer(mol) for mol in mols ])
         return predict_func(data)
 

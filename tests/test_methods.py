@@ -36,6 +36,8 @@ def test_build_coalition_graph_is_dag_and_has_root():
     assert graph.molecules[0].GetNumAtoms() == mol.GetNumAtoms()
     assert len(graph.edge_atom_counts) == len(graph.parent_ids) == len(graph.child_ids)
     assert len(graph.edge_atom_indices) == sum(graph.edge_atom_counts)
+    assert len(graph.edge_atom_edge_ids) == len(graph.edge_atom_indices)
+    assert max(graph.edge_atom_edge_ids, default=-1) < len(graph.parent_ids)
 
     nx_graph = nx.DiGraph()
     nx_graph.add_nodes_from(range(len(graph.molecules)))

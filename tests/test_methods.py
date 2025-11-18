@@ -32,9 +32,11 @@ def test_build_coalition_graph_is_dag_and_has_root():
 
     mol = Chem.MolFromSmiles("c1ccccc1")  # benzene
     explainer = AtomsExplainer(predictor, min_atoms=3)
-    g = explainer._build_coalition_graph(mol)
-    assert isinstance(g, nx.DiGraph)
-    assert nx.is_directed_acyclic_graph(g)
-    # root coalition is all atom indices
-    root = frozenset(range(mol.GetNumAtoms()))
-    assert root in g.nodes
+    graph = explainer._build_coalition_graph(mol)
+    assert graph.molecules[0].GetNumAtoms() == mol.GetNumAtoms()
+    assert len(graph.edge_atoms) == len(graph.parent_ids) == len(graph.child_ids)
+
+    nx_graph = nx.DiGraph()
+    nx_graph.add_nodes_from(range(len(graph.molecules)))
+    nx_graph.add_edges_from(zip(graph.parent_ids, graph.child_ids))
+    assert nx.is_directed_acyclic_graph(nx_graph)

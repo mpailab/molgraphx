@@ -1,7 +1,7 @@
 # External imports
 import torch
 from rdkit.Chem.rdchem import Mol
-from typing import Callable, Iterable, List, NamedTuple, Tuple
+from typing import Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 from collections import deque
 
 # Internal imports
@@ -82,65 +82,72 @@ class AtomsExplainer(object):
         # Skip small molecules
         if atom_num <= self.min_atoms:
             return (self.predictor([mol]) / atom_num).repeat(atom_num)
-        
-        # Build the coalition DAG that organizes connected submolecules
-        graph = self._build_coalition_graph(mol)
 
-        # Batched predictions for all submolecules in the coalition graph
-        predictions = self.predictor(graph.molecules)
-        if isinstance(predictions, torch.Tensor):
-            predictions = predictions.to(self.device)
-        else:
-            predictions = torch.as_tensor(predictions, device=self.device)
+        atom_ids = tuple(range(atom_num))
+        root_coalition = frozenset(atom_ids)
 
-        if predictions.ndim == 0:
-            predictions = predictions.unsqueeze(0)
-        elif predictions.ndim > 1:
-            if any(dim != 1 for dim in predictions.shape[1:]):
-                raise ValueError("predictor must return a scalar per molecule.")
-            predictions = predictions.reshape(predictions.shape[0])
+        # Maintain BFS traversal state without materializing the full DAG.
+        node_molecules: List[Optional[Mol]] = [mol]
+        node_orig_atoms: List[Tuple[int, ...]] = [atom_ids]
+        node_predictions: List[Optional[torch.Tensor]] = []
+        queue = deque([0])
+        coalition_to_id: Dict[frozenset[int], int] = {root_coalition: 0}
 
-        atom_scores = torch.zeros(atom_num, dtype=predictions.dtype, device=self.device)
-        atom_factor = torch.zeros(atom_num, dtype=predictions.dtype, device=self.device)
+        root_pred = self._predict_batch([mol])[0]
+        node_predictions.append(root_pred)
 
-        if graph.parent_ids:
-            parent_ids = torch.tensor(graph.parent_ids, dtype=torch.long, device=self.device)
-            child_ids = torch.tensor(graph.child_ids, dtype=torch.long, device=self.device)
+        atom_scores = torch.zeros(atom_num, dtype=root_pred.dtype, device=self.device)
+        atom_factor = torch.zeros(atom_num, dtype=root_pred.dtype, device=self.device)
 
-            parent_pred = predictions[parent_ids]
-            child_pred = predictions[child_ids]
+        while queue:
+            node_id = queue.popleft()
+            parent_pred = node_predictions[node_id]
+            cur_mol = node_molecules[node_id]
+            orig_atoms = node_orig_atoms[node_id]
 
-            if self.shapley_mode == 'absolute':
-                edge_scores = parent_pred - child_pred
+            if parent_pred is None or cur_mol is None:
+                continue
 
-            elif self.shapley_mode == 'relative':
-                edge_scores = 1 - child_pred / parent_pred
-
-            else:
-                edge_scores = torch.zeros_like(parent_pred)
-
-            edge_sizes = torch.tensor(
-                graph.edge_atom_counts,
-                dtype=edge_scores.dtype,
-                device=self.device,
+            edges, new_child_ids = self._coalesce_children(
+                node_id,
+                node_molecules,
+                node_orig_atoms,
+                node_predictions,
+                coalition_to_id,
+                queue,
             )
-            edge_contrib = edge_scores / edge_sizes
 
-            if graph.edge_atom_indices:
-                atom_indices_tensor = torch.tensor(
-                    graph.edge_atom_indices, dtype=torch.long, device=self.device
+            if not edges:
+                node_molecules[node_id] = None
+                continue
+
+            if new_child_ids:
+                new_preds = self._predict_batch(
+                    [node_molecules[child_id] for child_id in new_child_ids]
                 )
-                repeats = torch.tensor(
-                    graph.edge_atom_counts, dtype=torch.long, device=self.device
-                )
-                expanded_edge_indices = torch.repeat_interleave(
-                    torch.arange(len(repeats), device=self.device), repeats
-                )
-                per_atom_scores = edge_contrib[expanded_edge_indices]
-                atom_scores.index_add_(0, atom_indices_tensor, per_atom_scores)
-                atom_factor.index_add_(
-                    0, atom_indices_tensor, torch.ones_like(per_atom_scores)
-                )
+                for child_id, pred in zip(new_child_ids, new_preds):
+                    node_predictions[child_id] = pred
+
+            for child_id, removed_atoms in edges:
+                child_pred = node_predictions[child_id]
+                if child_pred is None or not removed_atoms:
+                    continue
+
+                if self.shapley_mode == 'absolute':
+                    score = parent_pred - child_pred
+
+                elif self.shapley_mode == 'relative':
+                    score = 1 - child_pred / parent_pred
+
+                else:
+                    score = parent_pred.new_zeros(())
+
+                atoms_idx = list(removed_atoms)
+                atom_scores[atoms_idx] += score / len(removed_atoms)
+                atom_factor[atoms_idx] += 1
+
+            # Release the RDKit molecule to reduce memory pressure
+            node_molecules[node_id] = None
 
         # Normalize by the number of times each atom was updated
         if self.balanced:
@@ -172,8 +179,9 @@ class AtomsExplainer(object):
         atom_ids = tuple(range(atom_num))
         root = frozenset(atom_ids)
 
-        node_molecules: List[Mol] = [mol]
+        node_molecules: List[Optional[Mol]] = [mol]
         node_orig_atoms: List[Tuple[int, ...]] = [atom_ids]
+        node_predictions: List[Optional[torch.Tensor]] = [None]
         stack = deque([0])
         coalition_to_id = {root: 0}
 
@@ -184,58 +192,20 @@ class AtomsExplainer(object):
 
         while stack:
             node_id = stack.popleft()
-            cur_mol = node_molecules[node_id]
-            orig_atoms = node_orig_atoms[node_id]
-            atom_ids = range(cur_mol.GetNumAtoms())
+            edges, _ = self._coalesce_children(
+                node_id,
+                node_molecules,
+                node_orig_atoms,
+                node_predictions,
+                coalition_to_id,
+                stack,
+            )
 
-            # Find symmetry classes of atoms in cur_mol
-            sym_classes = symmetry_classes(cur_mol, self.symmetry)
-
-            # Classes whose removal disconnects the molecule cur_mol
-            aps = articulation_classes(cur_mol, sym_classes)
-
-            # Full set of atom indices for cur_mol (for difference operations)
-            all_nodes_id = frozenset(atom_ids)
-
-            # Iterate classes (potential removals)
-            for cls_idx, cls_atoms in enumerate(sym_classes):
-                # Keep the molecule connected after removal
-                if cls_idx in aps:
-                    continue
-
-                # Enforce size threshold on the child submolecule
-                if cur_mol.GetNumAtoms() < len(cls_atoms) + self.min_atoms:
-                    continue
-
-                child_nodes_id = all_nodes_id.difference(cls_atoms)
-                child_coalition = frozenset(orig_atoms[i] for i in child_nodes_id)
-                removed_atoms = tuple(orig_atoms[i] for i in cls_atoms)
-
-                # Already seen this coalition — add edge and skip
-                if child_coalition in coalition_to_id:
-                    child_id = coalition_to_id[child_coalition]
-                    parent_ids.append(node_id)
-                    child_ids.append(child_id)
-                    edge_atom_indices.extend(removed_atoms)
-                    edge_atom_counts.append(len(removed_atoms))
-                    continue
-
-                # Build child submolecule and map back to original atoms
-                atom_maps: List[int] = []
-                child_mol = submolecule(cur_mol, child_nodes_id, atom_maps)
-                if child_mol.GetNumAtoms() < self.min_atoms:
-                    continue
-
-                child_id = len(node_molecules)
-                coalition_to_id[child_coalition] = child_id
-                node_molecules.append(child_mol)
-                node_orig_atoms.append(tuple(orig_atoms[i] for i in atom_maps))
-
+            for child_id, removed_atoms in edges:
                 parent_ids.append(node_id)
                 child_ids.append(child_id)
                 edge_atom_indices.extend(removed_atoms)
                 edge_atom_counts.append(len(removed_atoms))
-                stack.append(child_id)
 
         return _CoalitionGraph(
             molecules=tuple(node_molecules),
@@ -244,3 +214,80 @@ class AtomsExplainer(object):
             edge_atom_indices=tuple(edge_atom_indices),
             edge_atom_counts=tuple(edge_atom_counts),
         )
+
+    def _predict_batch(self, mols: Iterable[Mol]) -> torch.Tensor:
+        """Run the predictor and coerce the result to a 1-D tensor on device."""
+        mols = list(mols)
+        if not mols:
+            return torch.zeros(0, dtype=torch.float32, device=self.device)
+
+        outputs = self.predictor(mols)
+        if isinstance(outputs, torch.Tensor):
+            tensor = outputs
+        else:
+            tensor = torch.as_tensor(outputs)
+
+        if tensor.ndim == 0:
+            tensor = tensor.unsqueeze(0)
+        elif tensor.ndim > 1:
+            if any(dim != 1 for dim in tensor.shape[1:]):
+                raise ValueError("predictor must return a scalar per molecule.")
+            tensor = tensor.reshape(tensor.shape[0])
+
+        return tensor.to(self.device)
+
+    def _coalesce_children(
+        self,
+        node_id: int,
+        node_molecules: List[Optional[Mol]],
+        node_orig_atoms: List[Tuple[int, ...]],
+        node_predictions: List[Optional[torch.Tensor]],
+        coalition_to_id: Dict[frozenset[int], int],
+        queue: deque[int],
+    ) -> Tuple[List[Tuple[int, Tuple[int, ...]]], List[int]]:
+        """Expand a coalition node and return its children and new node ids."""
+        cur_mol = node_molecules[node_id]
+        if cur_mol is None:
+            return [], []
+
+        orig_atoms = node_orig_atoms[node_id]
+        atom_ids = range(cur_mol.GetNumAtoms())
+
+        sym_classes = symmetry_classes(cur_mol, self.symmetry)
+        aps = articulation_classes(cur_mol, sym_classes)
+        all_nodes_id = frozenset(atom_ids)
+
+        edges: List[Tuple[int, Tuple[int, ...]]] = []
+        new_child_ids: List[int] = []
+
+        for cls_idx, cls_atoms in enumerate(sym_classes):
+            if cls_idx in aps:
+                continue
+
+            if cur_mol.GetNumAtoms() < len(cls_atoms) + self.min_atoms:
+                continue
+
+            child_nodes_id = all_nodes_id.difference(cls_atoms)
+            child_coalition = frozenset(orig_atoms[i] for i in child_nodes_id)
+            removed_atoms = tuple(orig_atoms[i] for i in cls_atoms)
+
+            if child_coalition in coalition_to_id:
+                child_id = coalition_to_id[child_coalition]
+                edges.append((child_id, removed_atoms))
+                continue
+
+            atom_maps: List[int] = []
+            child_mol = submolecule(cur_mol, child_nodes_id, atom_maps)
+            if child_mol.GetNumAtoms() < self.min_atoms:
+                continue
+
+            child_id = len(node_molecules)
+            coalition_to_id[child_coalition] = child_id
+            node_molecules.append(child_mol)
+            node_orig_atoms.append(tuple(orig_atoms[i] for i in atom_maps))
+            node_predictions.append(None)
+            queue.append(child_id)
+            edges.append((child_id, removed_atoms))
+            new_child_ids.append(child_id)
+
+        return edges, new_child_ids

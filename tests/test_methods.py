@@ -34,7 +34,8 @@ def test_build_coalition_graph_is_dag_and_has_root():
     explainer = AtomsExplainer(predictor, min_atoms=3)
     graph = explainer._build_coalition_graph(mol)
     assert graph.molecules[0].GetNumAtoms() == mol.GetNumAtoms()
-    assert len(graph.edge_atoms) == len(graph.parent_ids) == len(graph.child_ids)
+    assert len(graph.edge_atom_counts) == len(graph.parent_ids) == len(graph.child_ids)
+    assert len(graph.edge_atom_indices) == sum(graph.edge_atom_counts)
 
     nx_graph = nx.DiGraph()
     nx_graph.add_nodes_from(range(len(graph.molecules)))

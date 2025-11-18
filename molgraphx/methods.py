@@ -15,7 +15,8 @@ class _CoalitionGraph(NamedTuple):
     molecules: Tuple[Mol, ...]
     parent_ids: Tuple[int, ...]
     child_ids: Tuple[int, ...]
-    edge_atoms: Tuple[Tuple[int, ...], ...]
+    edge_atom_indices: Tuple[int, ...]
+    edge_atom_counts: Tuple[int, ...]
 
 
 class AtomsExplainer(object):
@@ -119,26 +120,23 @@ class AtomsExplainer(object):
                 edge_scores = torch.zeros_like(parent_pred)
 
             edge_sizes = torch.tensor(
-                [len(atoms) for atoms in graph.edge_atoms],
+                graph.edge_atom_counts,
                 dtype=edge_scores.dtype,
                 device=self.device,
             )
             edge_contrib = edge_scores / edge_sizes
 
-            flat_atom_indices: List[int] = []
-            edge_index_for_atom: List[int] = []
-            for edge_idx, atoms in enumerate(graph.edge_atoms):
-                flat_atom_indices.extend(atoms)
-                edge_index_for_atom.extend([edge_idx] * len(atoms))
-
-            if flat_atom_indices:
+            if graph.edge_atom_indices:
                 atom_indices_tensor = torch.tensor(
-                    flat_atom_indices, dtype=torch.long, device=self.device
+                    graph.edge_atom_indices, dtype=torch.long, device=self.device
                 )
-                edge_index_tensor = torch.tensor(
-                    edge_index_for_atom, dtype=torch.long, device=self.device
+                repeats = torch.tensor(
+                    graph.edge_atom_counts, dtype=torch.long, device=self.device
                 )
-                per_atom_scores = edge_contrib[edge_index_tensor]
+                expanded_edge_indices = torch.repeat_interleave(
+                    torch.arange(len(repeats), device=self.device), repeats
+                )
+                per_atom_scores = edge_contrib[expanded_edge_indices]
                 atom_scores.index_add_(0, atom_indices_tensor, per_atom_scores)
                 atom_factor.index_add_(
                     0, atom_indices_tensor, torch.ones_like(per_atom_scores)
@@ -181,7 +179,8 @@ class AtomsExplainer(object):
 
         parent_ids: List[int] = []
         child_ids: List[int] = []
-        edge_atoms: List[Tuple[int, ...]] = []
+        edge_atom_indices: List[int] = []
+        edge_atom_counts: List[int] = []
 
         while stack:
             node_id = stack.popleft()
@@ -217,7 +216,8 @@ class AtomsExplainer(object):
                     child_id = coalition_to_id[child_coalition]
                     parent_ids.append(node_id)
                     child_ids.append(child_id)
-                    edge_atoms.append(removed_atoms)
+                    edge_atom_indices.extend(removed_atoms)
+                    edge_atom_counts.append(len(removed_atoms))
                     continue
 
                 # Build child submolecule and map back to original atoms
@@ -233,12 +233,14 @@ class AtomsExplainer(object):
 
                 parent_ids.append(node_id)
                 child_ids.append(child_id)
-                edge_atoms.append(removed_atoms)
+                edge_atom_indices.extend(removed_atoms)
+                edge_atom_counts.append(len(removed_atoms))
                 stack.append(child_id)
 
         return _CoalitionGraph(
             molecules=tuple(node_molecules),
             parent_ids=tuple(parent_ids),
             child_ids=tuple(child_ids),
-            edge_atoms=tuple(edge_atoms),
+            edge_atom_indices=tuple(edge_atom_indices),
+            edge_atom_counts=tuple(edge_atom_counts),
         )
